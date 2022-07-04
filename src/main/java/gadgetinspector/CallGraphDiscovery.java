@@ -21,6 +21,7 @@ public class CallGraphDiscovery {
     private final Set<GraphCall> discoveredCalls = new HashSet<>();
 
     public void discover(final ClassResourceEnumerator classResourceEnumerator, GIConfig config) throws IOException {
+        // 加载之前几个阶段全量收集到的信息，包括方法、类、继承关系、方法入参和返回值之间的污点分析结果
         Map<MethodReference.Handle, MethodReference> methodMap = DataLoader.loadMethods();
         Map<ClassReference.Handle, ClassReference> classMap = DataLoader.loadClasses();
         InheritanceMap inheritanceMap = InheritanceMap.load();
@@ -28,10 +29,12 @@ public class CallGraphDiscovery {
 
         SerializableDecider serializableDecider = config.getSerializableDecider(methodMap, inheritanceMap);
 
+        // 遍历所有的类
         for (ClassResourceEnumerator.ClassResource classResource : classResourceEnumerator.getAllClasses()) {
             try (InputStream in = classResource.getInputStream()) {
                 ClassReader cr = new ClassReader(in);
                 try {
+                    // 继续使用访问者模式，用到了一个新的Visitor: ModelGeneratorVisitor
                     cr.accept(new ModelGeneratorClassVisitor(classMap, inheritanceMap, passthroughDataflow, serializableDecider, Opcodes.ASM6),
                             ClassReader.EXPAND_FRAMES);
                 } catch (Exception e) {
@@ -82,6 +85,7 @@ public class CallGraphDiscovery {
         public MethodVisitor visitMethod(int access, String name, String desc,
                                          String signature, String[] exceptions) {
             MethodVisitor mv = super.visitMethod(access, name, desc, signature, exceptions);
+            // 核心MethodVisitor是ModelGeneratorMethodVisitor
             ModelGeneratorMethodVisitor modelGeneratorMethodVisitor = new ModelGeneratorMethodVisitor(classMap,
                     inheritanceMap, passthroughDataflow, serializableDecider, api, mv, this.name, access, name, desc, signature, exceptions);
 
@@ -138,14 +142,17 @@ public class CallGraphDiscovery {
 
             int localIndex = 0;
             int argIndex = 0;
+            // 判断声明的方法是否是static方法
             if ((this.access & Opcodes.ACC_STATIC) == 0) {
+                // 如果不是，那么就在局部变量表中添加"arg0"，表示当前的对象引用this
                 setLocalTaint(localIndex, "arg" + argIndex);
                 localIndex += 1;
                 argIndex += 1;
             }
+            // 然后根据方法的参数，依次向局部变量表中添加"arg1", "arg2"...
             for (Type argType : Type.getArgumentTypes(desc)) {
                 setLocalTaint(localIndex, "arg" + argIndex);
-                localIndex += argType.getSize();
+                localIndex += argType.getSize();    // localIndex根据参数类型占用的size递增
                 argIndex += 1;
             }
         }
@@ -154,20 +161,25 @@ public class CallGraphDiscovery {
         public void visitFieldInsn(int opcode, String owner, String name, String desc) {
 
             switch (opcode) {
+                // 静态成员的读写不做处理
                 case Opcodes.GETSTATIC:
                     break;
                 case Opcodes.PUTSTATIC:
                     break;
                 case Opcodes.GETFIELD:
                     Type type = Type.getType(desc);
+                    // 只有参数类型所占size=1的时候，才进入then branch
                     if (type.getSize() == 1) {
-                        Boolean isTransient = null;
+                        Boolean isTransient = null;  // 表示变量是否被transient修饰
 
                         // If a field type could not possibly be serialized, it's effectively transient
                         if (!couldBeSerialized(serializableDecider, inheritanceMap, new ClassReference.Handle(type.getInternalName()))) {
+                            // 判断该字段是否可以通过serializableDecider的决策, 如果不能, 依然把它当做是一个transient成员变量
                             isTransient = Boolean.TRUE;
                         } else {
+                            // 如果可以被序列化的话, 从classMap中获取其owner class的引用
                             ClassReference clazz = classMap.get(new ClassReference.Handle(owner));
+                            // 这部分逻辑在上一节已经出现过了, 找到声明该变量的class, 判断变量是否被transient修饰
                             while (clazz != null) {
                                 for (ClassReference.Member member : clazz.getMembers()) {
                                     if (member.getName().equals(name)) {
@@ -181,14 +193,19 @@ public class CallGraphDiscovery {
                                 clazz = classMap.get(new ClassReference.Handle(clazz.getSuperClass()));
                             }
                         }
-
+                        // newTaint模拟的是GETFIELD指令的结果
                         Set<String> newTaint = new HashSet<>();
+                        // 如果变量不被transient修饰的话
                         if (!Boolean.TRUE.equals(isTransient)) {
+                            // 获取栈顶的元素 (此时栈顶的元素是成员变量的owner class的对象引用, 在这里用字符串表示)
                             for (String s : getStackTaint(0)) {
+                                // 将格式为<class_name>.<field_name>的一串字符加入到newTaint中
                                 newTaint.add(s + "." + name);
                             }
                         }
+                        // 委派给父类，模拟栈帧的变化
                         super.visitFieldInsn(opcode, owner, name, desc);
+                        // 将newTaint放到栈顶, GETFIELD指令执行完毕
                         setStackTaint(0, newTaint);
                         return;
                     }
@@ -204,7 +221,9 @@ public class CallGraphDiscovery {
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String desc, boolean itf) {
+            // 获取方法参数的类型
             Type[] argTypes = Type.getArgumentTypes(desc);
+            // 非静态方法的参数列表要加this
             if (opcode != Opcodes.INVOKESTATIC) {
                 Type[] extendedArgTypes = new Type[argTypes.length+1];
                 System.arraycopy(argTypes, 0, extendedArgTypes, 1, argTypes.length);

@@ -85,6 +85,7 @@ public class PassthroughDiscovery {
                     PassthroughDataflowClassVisitor cv = new PassthroughDataflowClassVisitor(classMap, inheritanceMap,
                             passthroughDataflow, serializableDecider, Opcodes.ASM6, method);
                     cr.accept(cv, ClassReader.EXPAND_FRAMES);
+                    // 访问完XRETURN指令之后方法也就执行完毕，调用getReturnTaint()方法获取污点分析的结果，以对应的方法为键，缓存到passthroughDataflow里面
                     passthroughDataflow.put(method, cv.getReturnTaint());
                 } catch (Exception e) {
                     LOGGER.error("Exception analyzing " + method.getClassReference().getName(), e);
@@ -332,19 +333,24 @@ public class PassthroughDiscovery {
 
         @Override
         public void visitInsn(int opcode) {
+            // 当访问到一些XRETURN指令的时候，也即方法调用完的时候，这时候栈顶的元素就是方法的执行结果，在GI的“模拟”中为入参污点分析的结果
             switch(opcode) {
                 case Opcodes.IRETURN:
                 case Opcodes.FRETURN:
                 case Opcodes.ARETURN:
+                    // int, float, 引用类型占1个size，所以直接返回栈顶的污点分析结果即可
                     returnTaint.addAll(getStackTaint(0));
                     break;
                 case Opcodes.LRETURN:
                 case Opcodes.DRETURN:
+                    // long, double占2个size，所以要返回栈顶元素的下一个元素（栈顶元素为空的占位符）
                     returnTaint.addAll(getStackTaint(1));
                     break;
                 case Opcodes.RETURN:
+                    // RETURN指令返回void，不做处理
                     break;
                 default:
+                    // 其他指令，不处理
                     break;
             }
 
