@@ -406,45 +406,64 @@ public class PassthroughDiscovery {
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String desc, boolean itf) {
+            // 获取方法的参数类型
             Type[] argTypes = Type.getArgumentTypes(desc);
+            // 如果不是静态方法调用的话，参数0是this，其他参数往后顺延
             if (opcode != Opcodes.INVOKESTATIC) {
-                Type[] extendedArgTypes = new Type[argTypes.length+1];
+                Type[] extendedArgTypes = new Type[argTypes.length + 1];
                 System.arraycopy(argTypes, 0, extendedArgTypes, 1, argTypes.length);
                 extendedArgTypes[0] = Type.getObjectType(owner);
                 argTypes = extendedArgTypes;
             }
+            // 获取返回值类型所占的size大小
             int retSize = Type.getReturnType(desc).getSize();
-
+            // 调用的方法的返回值受参数污染的索引集合
             Set<Integer> resultTaint;
             switch (opcode) {
+                // 四种方法调用：静态方法，普通方法，特殊方法，接口方法
                 case Opcodes.INVOKESTATIC:
                 case Opcodes.INVOKEVIRTUAL:
                 case Opcodes.INVOKESPECIAL:
                 case Opcodes.INVOKEINTERFACE:
+                    // 传入参数的污点集合
                     final List<Set<Integer>> argTaint = new ArrayList<Set<Integer>>(argTypes.length);
                     for (int i = 0; i < argTypes.length; i++) {
+                        // null占位
                         argTaint.add(null);
                     }
 
                     int stackIndex = 0;
+                    // 方法调用的时候参数从右往左存储在栈中
                     for (int i = 0; i < argTypes.length; i++) {
                         Type argType = argTypes[i];
                         if (argType.getSize() > 0) {
+                            // 在执行方法调用的指令之前，参数就已经在操作数栈上了，所以这里直接获取即可
+                            // 根据参数顺序，依次从操作数栈中获取参数
+                            // 注意这里并不会从栈中pop出参数，这里仅仅是“静态”分析，模拟栈帧变化是父类该方法要做的事
                             argTaint.set(argTypes.length - 1 - i, getStackTaint(stackIndex + argType.getSize() - 1));
                         }
+                        // index根据参数类型的size递增
                         stackIndex += argType.getSize();
                     }
 
+                    // 如果调用的是构造方法
                     if (name.equals("<init>")) {
                         // Pass result taint through to original taint set; the initialized object is directly tainted by
                         // parameters
+                        // 构造方法会返回类的实例对象，也就是this，那么方法返回结果的污点集合必然会受到this的污染
+                        // 所以将this添加到结果的污点集合中
                         resultTaint = argTaint.get(0);
                     } else {
+                        // 如果是其他方法调用，那么返回值的污点集合先初始化为空的Set
                         resultTaint = new HashSet<>();
                     }
+                    // passthroughDataflow也就是calculatePassthroughDataflow()方法返回的结果
+                    // 这一步获取调用的方法的污点分析结果，即callee的返回值受哪个（些）参数的污染
+                    // 由于已经进行了逆拓扑排序，所以调用的方法必然已经先被分析过，污染结果存在对应的passthrough中了
                     Set<Integer> passthrough = passthroughDataflow.get(new MethodReference.Handle(new ClassReference.Handle(owner), name, desc));
                     if (passthrough != null) {
                         for (Integer passthroughDataflowArg : passthrough) {
+                            // 取出对应索引上的参数，然后添加到resultTaint中
                             resultTaint.addAll(argTaint.get(passthroughDataflowArg));
                         }
                     }
@@ -453,10 +472,13 @@ public class PassthroughDiscovery {
                     throw new IllegalStateException("Unsupported opcode: " + opcode);
             }
 
+            // 委派给父类，模拟JVM的栈帧变化
             super.visitMethodInsn(opcode, owner, name, desc, itf);
 
             if (retSize > 0) {
-                getStackTaint(retSize-1).addAll(resultTaint);
+                // 如果方法有返回值，那么就把之前分析得到的resultTaint加入到栈顶的集合中
+                // 此时栈顶的元素是父类的visitMethodInsn分析得到的污染结果
+                getStackTaint(retSize - 1).addAll(resultTaint);
             }
         }
     }

@@ -619,7 +619,9 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
         final MethodReference.Handle methodHandle = new MethodReference.Handle(
                 new ClassReference.Handle(owner), name, desc);
 
+        // 获取方法参数类型
         Type[] argTypes = Type.getArgumentTypes(desc);
+        // 同子类，对非静态方法调用做特殊处理，将参数this设置为参数表argTypes的第0位
         if (opcode != Opcodes.INVOKESTATIC) {
             Type[] extendedArgTypes = new Type[argTypes.length+1];
             System.arraycopy(argTypes, 0, extendedArgTypes, 1, argTypes.length);
@@ -627,7 +629,9 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
             argTypes = extendedArgTypes;
         }
 
+        // 获取返回值类型
         final Type returnType = Type.getReturnType(desc);
+        // 获取返回值类型所占的size
         final int retSize = returnType.getSize();
 
         switch (opcode) {
@@ -635,8 +639,10 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
             case Opcodes.INVOKEVIRTUAL:
             case Opcodes.INVOKESPECIAL:
             case Opcodes.INVOKEINTERFACE:
+                // 和子类一样，用Set模拟单个参数，多个Set构成一个List，表示所有传入方法的参数
                 final List<Set<T>> argTaint = new ArrayList<Set<T>>(argTypes.length);
                 for (int i = 0; i < argTypes.length; i++) {
+                    // null占位
                     argTaint.add(null);
                 }
 
@@ -644,8 +650,10 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                     Type argType = argTypes[i];
                     if (argType.getSize() > 0) {
                         for (int j = 0; j < argType.getSize() - 1; j++) {
+                            // 遍历到size-2位，将占位的数据pop掉
                             pop();
                         }
+                        // 第size-1位是真正需要分析的参数，将它放到argTaint中
                         argTaint.set(argTypes.length - 1 - i, pop());
                     }
                 }
@@ -659,19 +667,26 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                     resultTaint = new HashSet<>();
                 }
 
+
                 // If calling defaultReadObject on a tainted ObjectInputStream, that taint passes to "this"
+                // 当调用ObjectInputStream#defaultReadObject的时候，给局部变量表中的第0个元素（也就是this）设置污染
                 if (owner.equals("java/io/ObjectInputStream") && name.equals("defaultReadObject") && desc.equals("()V")) {
                     savedVariableState.localVars.get(0).addAll(argTaint.get(0));
                 }
 
+                // 遍历预设的污染名单，简化分析
+                // 污染的名单其实就是预设了一些函数，说明这些函数的返回值会固定受到哪一位参数的影响，当调用到这些函数的时候无需额外进行分析，直接获取预设的数值即可
                 for (Object[] passthrough : PASSTHROUGH_DATAFLOW) {
+                    // 如果调用的函数的签名匹配预设名单中的某一项
                     if (passthrough[0].equals(owner) && passthrough[1].equals(name) && passthrough[2].equals(desc)) {
                         for (int i = 3; i < passthrough.length; i++) {
+                            // 则将预设的参数污染位直接加入到resultTaint中
                             resultTaint.addAll(argTaint.get((Integer)passthrough[i]));
                         }
                     }
                 }
 
+                // 还是因为逆拓扑排序的结果，最后调用的方法会被最先分析，所以当存在方法调用的时候，passthroughDataflow必然已经存储了该方法的参数污染分析结果
                 if (passthroughDataflow != null) {
                     Set<Integer> passthroughArgs = passthroughDataflow.get(methodHandle);
                     if (passthroughArgs != null) {
@@ -684,26 +699,35 @@ public class TaintTrackingMethodVisitor<T> extends MethodVisitor {
                 // Heuristic; if the object implements java.util.Collection or java.util.Map, assume any method accepting an object
                 // taints the collection. Assume that any method returning an object returns the taint of the collection.
                 if (opcode != Opcodes.INVOKESTATIC && argTypes[0].getSort() == Type.OBJECT) {
+                    // 获取被调用函数的owner class的所有基类
                     Set<ClassReference.Handle> parents = inheritanceMap.getSuperClasses(new ClassReference.Handle(argTypes[0].getClassName().replace('.', '/')));
+                    // 判断方法的owner class是否是Collection或者Map的子类
                     if (parents != null && (parents.contains(new ClassReference.Handle("java/util/Collection")) ||
                             parents.contains(new ClassReference.Handle("java/util/Map")))) {
+                        // 如果是，则认为除this之外的所有参数都会污染this，注意这里并不会向resultTaint中添加污染
                         for (int i = 1; i < argTaint.size(); i++) {
                             argTaint.get(0).addAll(argTaint.get(i));
                         }
 
+                        // 判断返回的类型，如果是对象或者数组的话，再向resultTaint添加污染
                         if (returnType.getSort() == Type.OBJECT || returnType.getSort() == Type.ARRAY) {
+                            // 添加的污染为this，而this又会被传入的其他参数污染
                             resultTaint.addAll(argTaint.get(0));
                         }
                     }
                 }
 
+                // 如果有返回值的话，将resultTaint入栈（相当于完成了一次方法调用）
                 if (retSize > 0) {
+                    // 分析的结果入栈
                     push(resultTaint);
                     for (int i = 1; i < retSize; i++) {
+                        // 这里push是为了补位，让值占够size个大小
                         push();
                     }
                 }
                 break;
+
             default:
                 throw new IllegalStateException("Unsupported opcode: " + opcode);
         }
