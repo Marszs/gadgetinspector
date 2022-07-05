@@ -240,29 +240,37 @@ public class CallGraphDiscovery {
                     for (int i = 0; i < argTypes.length; i++) {
                         int argIndex = argTypes.length-1-i;
                         Type type = argTypes[argIndex];
+                        // 调用方法前所有参数已经入栈，根据索引获取操作数栈上的参数
                         Set<String> taint = getStackTaint(stackIndex);
                         if (taint.size() > 0) {
                             for (String argSrc : taint) {
                                 if (!argSrc.substring(0, 3).equals("arg")) {
                                     throw new IllegalStateException("Invalid taint arg: " + argSrc);
                                 }
+                                // 从操作数栈上取出来的参数有两种情况
+                                //   1. "arg0"这种形式，它表示方法中的参数
+                                //   2. "arg0.<filed>"这种形式，表示获取了某个参数的某个成员变量
                                 int dotIndex = argSrc.indexOf('.');
                                 int srcArgIndex;
                                 String srcArgPath;
-                                if (dotIndex == -1) {
+                                if (dotIndex == -1) {   // dotIndex == -1对应第1种情况
+                                    // 获取参数的索引位
                                     srcArgIndex = Integer.parseInt(argSrc.substring(3));
                                     srcArgPath = null;
-                                } else {
+                                } else {    // else-branch对应第2种情况
+                                    // 获取参数的索引位
                                     srcArgIndex = Integer.parseInt(argSrc.substring(3, dotIndex));
+                                    // 额外获取了一个srcArgPath，也就是"arg0.<field>"的"<field>"部分
                                     srcArgPath = argSrc.substring(dotIndex+1);
                                 }
 
+                                // 将这些信息用GraphCall包装起来
                                 discoveredCalls.add(new GraphCall(
                                         new MethodReference.Handle(new ClassReference.Handle(this.owner), this.name, this.desc),
                                         new MethodReference.Handle(new ClassReference.Handle(owner), name, desc),
-                                        srcArgIndex,
-                                        srcArgPath,
-                                        argIndex));
+                                        srcArgIndex,    // srcArgIndex表示caller的参数索引
+                                        srcArgPath,     // srcArgPath表示"<field>"部分呢
+                                        argIndex));     // argIndex表示callee的参数索引
                             }
                         }
 
@@ -272,7 +280,7 @@ public class CallGraphDiscovery {
                 default:
                     throw new IllegalStateException("Unsupported opcode: " + opcode);
             }
-
+            // 模拟操作数栈变化
             super.visitMethodInsn(opcode, owner, name, desc, itf);
         }
     }

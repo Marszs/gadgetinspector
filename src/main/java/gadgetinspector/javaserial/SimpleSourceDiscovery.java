@@ -11,7 +11,6 @@ import org.objectweb.asm.Type;
 import java.util.Map;
 
 public class SimpleSourceDiscovery extends SourceDiscovery {
-
     @Override
     public void discover(Map<ClassReference.Handle, ClassReference> classMap,
                          Map<MethodReference.Handle, MethodReference> methodMap,

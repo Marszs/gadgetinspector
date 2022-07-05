@@ -19,10 +19,11 @@ public abstract class SourceDiscovery {
     }
 
     public void discover() throws IOException {
+        // 加载之前全量收集的classMap, MethodMap, inheritanceMap
         Map<ClassReference.Handle, ClassReference> classMap = DataLoader.loadClasses();
         Map<MethodReference.Handle, MethodReference> methodMap = DataLoader.loadMethods();
         InheritanceMap inheritanceMap = InheritanceMap.load();
-
+        // 核心方法discover的具体逻辑由子类实现
         discover(classMap, methodMap, inheritanceMap);
     }
 
